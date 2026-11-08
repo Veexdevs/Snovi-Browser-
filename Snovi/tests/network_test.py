@@ -63,6 +63,15 @@ if shutil.which('openssl'):
             env = dict(os.environ, SSL_CERT_FILE=str(cert))
             good = subprocess.run([sys.argv[1], f'https://localhost:{tls_server.server_port}/'], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=env)
             assert 'Local test' in good.stdout and not good.stderr, (good.stdout, good.stderr)
+            # Mobile supplies an explicit bundled CA file; it must be loaded, not ignored.
+            mobile_env = dict(os.environ, SNOVI_CA_FILE=str(cert))
+            mobile = subprocess.run([sys.argv[1], f'https://localhost:{tls_server.server_port}/'], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=mobile_env)
+            assert 'Local test' in mobile.stdout and not mobile.stderr, (mobile.stdout, mobile.stderr)
+            bad_host = subprocess.run([sys.argv[1], url], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=mobile_env)
+            assert 'certificado inválido' in bad_host.stderr and 'Local test' not in bad_host.stdout, bad_host.stderr
+            mobile_env['SNOVI_CA_FILE'] = str(Path(tmp) / 'missing.pem')
+            missing = subprocess.run([sys.argv[1], url], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=mobile_env)
+            assert 'certificados de confiança' in missing.stderr and 'Local test' not in missing.stdout, missing.stderr
             mismatch = subprocess.run([sys.argv[1], url], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=env)
             assert 'certificado inválido' in mismatch.stderr and 'Local test' not in mismatch.stdout, mismatch.stderr
         finally:

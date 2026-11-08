@@ -32,6 +32,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
+#include <cstdlib>
 namespace snovi {
 namespace {
 constexpr size_t max_response=8*1024*1024, max_header=64*1024;
@@ -92,6 +93,9 @@ Response HttpClient::request(const Url& url) {
         DWORD timeout=15000; setsockopt(socket.fd,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout)); setsockopt(socket.fd,SOL_SOCKET,SO_SNDTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout));
 #else
         timeval timeout{15,0}; setsockopt(socket.fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)); setsockopt(socket.fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+#ifdef SO_NOSIGPIPE
+        int noSigpipe=1; setsockopt(socket.fd,SOL_SOCKET,SO_NOSIGPIPE,&noSigpipe,sizeof(noSigpipe));
+#endif
 #endif
         if(connect(socket.fd,a->ai_addr,a->ai_addrlen)==0) break;
         closeSocket(socket.fd); socket.fd=invalidSocket;
@@ -100,7 +104,13 @@ Response HttpClient::request(const Url& url) {
     std::unique_ptr<SSL_CTX,decltype(&SSL_CTX_free)> ctx(nullptr,SSL_CTX_free);
     std::unique_ptr<SSL,decltype(&SSL_free)> ssl(nullptr,SSL_free);
     if(url.scheme=="https") {
-        ctx.reset(SSL_CTX_new(TLS_client_method())); if(!ctx || SSL_CTX_set_default_verify_paths(ctx.get())!=1) throw std::runtime_error("Não foi possível carregar certificados de confiança");
+        ctx.reset(SSL_CTX_new(TLS_client_method()));
+        if(!ctx) throw std::runtime_error("Falha TLS");
+        // Mobile bundles its own CA file; fail closed if it cannot be loaded.
+        const char* ca=std::getenv("SNOVI_CA_FILE");
+        if(ca && *ca) {
+            if(SSL_CTX_load_verify_locations(ctx.get(),ca,nullptr)!=1) throw std::runtime_error("Não foi possível carregar certificados de confiança");
+        } else if(SSL_CTX_set_default_verify_paths(ctx.get())!=1) throw std::runtime_error("Não foi possível carregar certificados de confiança");
 #ifdef _WIN32
         addSystemTrust(ctx.get());
 #endif
@@ -119,8 +129,10 @@ Response HttpClient::request(const Url& url) {
     size_t sent=0; while(sent<req.size()) { int n=ssl ? SSL_write(ssl.get(),req.data()+sent,static_cast<int>(req.size()-sent)) : static_cast<int>(send(socket.fd,req.data()+sent,static_cast<int>(req.size()-sent),
 #ifdef _WIN32
         0
-#else
+#elif defined(MSG_NOSIGNAL)
         MSG_NOSIGNAL
+#else
+        0
 #endif
         )); if(n<=0) throw std::runtime_error("Falha ao enviar requisição"); sent+=n; }
     std::string data; char buf[8192]; bool uncleanTlsEof=false;
