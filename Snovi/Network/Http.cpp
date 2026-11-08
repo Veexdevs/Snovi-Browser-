@@ -1,4 +1,12 @@
 #include "Http.h"
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#endif
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/sslerr.h>
@@ -6,10 +14,18 @@
 #error "Snovi requires OpenSSL 3.0 or newer"
 #endif
 #include <openssl/x509v3.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <wincrypt.h>
+#include <climits>
+#else
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 #include <algorithm>
 #include <cctype>
 #include <memory>
@@ -19,7 +35,36 @@
 namespace snovi {
 namespace {
 constexpr size_t max_response=8*1024*1024, max_header=64*1024;
-struct Socket { int fd=-1; ~Socket(){if(fd>=0) close(fd);} };
+#ifdef _WIN32
+using SocketHandle = SOCKET;
+constexpr SocketHandle invalidSocket = INVALID_SOCKET;
+void closeSocket(SocketHandle fd) { closesocket(fd); }
+void ensureSockets() {
+    struct Winsock {
+        Winsock() { WSADATA data; if (WSAStartup(MAKEWORD(2, 2), &data)!=0) throw std::runtime_error("Falha ao iniciar Winsock"); }
+        ~Winsock() { WSACleanup(); }
+    };
+    static Winsock winsock;
+}
+// OpenSSL's default file paths do not automatically use Windows' trust store.
+void addSystemTrust(SSL_CTX* ctx) {
+    HCERTSTORE roots = CertOpenSystemStoreW(0, L"ROOT");
+    if(!roots) throw std::runtime_error("Não foi possível acessar os certificados do Windows");
+    PCCERT_CONTEXT cert = nullptr;
+    while((cert=CertEnumCertificatesInStore(roots, cert)) != nullptr) {
+        const unsigned char* data = cert->pbCertEncoded;
+        X509* x = d2i_X509(nullptr, &data, cert->cbCertEncoded);
+        if(x) { X509_STORE_add_cert(SSL_CTX_get_cert_store(ctx), x); X509_free(x); ERR_clear_error(); }
+    }
+    CertCloseStore(roots, 0);
+}
+#else
+using SocketHandle = int;
+constexpr SocketHandle invalidSocket = -1;
+void closeSocket(SocketHandle fd) { close(fd); }
+void ensureSockets() {}
+#endif
+struct Socket { SocketHandle fd=invalidSocket; ~Socket(){if(fd!=invalidSocket) closeSocket(fd);} };
 std::string lower(std::string s) { std::transform(s.begin(),s.end(),s.begin(),[](unsigned char c){return std::tolower(c);}); return s; }
 std::string trim(std::string s) { auto a=s.find_first_not_of(" \t"), b=s.find_last_not_of(" \t"); return a==std::string::npos ? "" : s.substr(a,b-a+1); }
 std::string dechunk(const std::string& data) {
@@ -37,30 +82,47 @@ std::string dechunk(const std::string& data) {
 }
 Response HttpClient::request(const Url& url) {
     if(!filter_.allow(url)) throw std::runtime_error("Requisição bloqueada pelo Snovi AdBlock: "+url.host);
+    ensureSockets();
     addrinfo hints{}; hints.ai_socktype=SOCK_STREAM; hints.ai_family=AF_UNSPEC; addrinfo* raw=nullptr;
     if(getaddrinfo(url.host.c_str(),url.port.c_str(),&hints,&raw)!=0) throw std::runtime_error("Falha ao resolver o host");
     std::unique_ptr<addrinfo,decltype(&freeaddrinfo)> addresses(raw,freeaddrinfo); Socket socket;
     for(auto* a=raw;a;a=a->ai_next) {
-        socket.fd=::socket(a->ai_family,a->ai_socktype,a->ai_protocol); if(socket.fd<0) continue;
+        socket.fd=::socket(a->ai_family,a->ai_socktype,a->ai_protocol); if(socket.fd==invalidSocket) continue;
+#ifdef _WIN32
+        DWORD timeout=15000; setsockopt(socket.fd,SOL_SOCKET,SO_RCVTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout)); setsockopt(socket.fd,SOL_SOCKET,SO_SNDTIMEO,reinterpret_cast<const char*>(&timeout),sizeof(timeout));
+#else
         timeval timeout{15,0}; setsockopt(socket.fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout)); setsockopt(socket.fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
+#endif
         if(connect(socket.fd,a->ai_addr,a->ai_addrlen)==0) break;
-        close(socket.fd); socket.fd=-1;
+        closeSocket(socket.fd); socket.fd=invalidSocket;
     }
-    if(socket.fd<0) throw std::runtime_error("Falha na conexão");
+    if(socket.fd==invalidSocket) throw std::runtime_error("Falha na conexão");
     std::unique_ptr<SSL_CTX,decltype(&SSL_CTX_free)> ctx(nullptr,SSL_CTX_free);
     std::unique_ptr<SSL,decltype(&SSL_free)> ssl(nullptr,SSL_free);
     if(url.scheme=="https") {
         ctx.reset(SSL_CTX_new(TLS_client_method())); if(!ctx || SSL_CTX_set_default_verify_paths(ctx.get())!=1) throw std::runtime_error("Não foi possível carregar certificados de confiança");
+#ifdef _WIN32
+        addSystemTrust(ctx.get());
+#endif
         SSL_CTX_set_verify(ctx.get(),SSL_VERIFY_PEER,nullptr); SSL_CTX_set_min_proto_version(ctx.get(),TLS1_2_VERSION);
         ssl.reset(SSL_new(ctx.get())); if(!ssl) throw std::runtime_error("Falha TLS");
         unsigned char ip[16]; bool isIp=inet_pton(AF_INET,url.host.c_str(),ip)==1 || inet_pton(AF_INET6,url.host.c_str(),ip)==1;
         if(isIp) { if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl.get()),url.host.c_str())!=1) throw std::runtime_error("Falha na verificação de IP"); }
         else if(SSL_set_tlsext_host_name(ssl.get(),url.host.c_str())!=1 || SSL_set1_host(ssl.get(),url.host.c_str())!=1) throw std::runtime_error("Falha na verificação de host TLS");
-        SSL_set_fd(ssl.get(),socket.fd);
+#ifdef _WIN32
+        if(socket.fd>INT_MAX) throw std::runtime_error("Socket incompatível com OpenSSL");
+#endif
+        if(SSL_set_fd(ssl.get(),static_cast<int>(socket.fd))!=1) throw std::runtime_error("Falha ao configurar socket TLS");
         if(SSL_connect(ssl.get())!=1 || SSL_get_verify_result(ssl.get())!=X509_V_OK) throw std::runtime_error("Falha TLS ou certificado inválido");
     }
     std::string req="GET "+url.target+" HTTP/1.1\r\nHost: "+url.authority()+"\r\nUser-Agent: Snovi/0.1\r\nAccept: text/html,text/plain;q=0.9,*/*;q=0.1\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n";
-    size_t sent=0; while(sent<req.size()) { int n=ssl ? SSL_write(ssl.get(),req.data()+sent,static_cast<int>(req.size()-sent)) : static_cast<int>(send(socket.fd,req.data()+sent,req.size()-sent,MSG_NOSIGNAL)); if(n<=0) throw std::runtime_error("Falha ao enviar requisição"); sent+=n; }
+    size_t sent=0; while(sent<req.size()) { int n=ssl ? SSL_write(ssl.get(),req.data()+sent,static_cast<int>(req.size()-sent)) : static_cast<int>(send(socket.fd,req.data()+sent,static_cast<int>(req.size()-sent),
+#ifdef _WIN32
+        0
+#else
+        MSG_NOSIGNAL
+#endif
+        )); if(n<=0) throw std::runtime_error("Falha ao enviar requisição"); sent+=n; }
     std::string data; char buf[8192]; bool uncleanTlsEof=false;
     for(;;) { int n=ssl ? SSL_read(ssl.get(),buf,sizeof(buf)) : static_cast<int>(recv(socket.fd,buf,sizeof(buf),0));
         if(n<=0) { if(ssl) { int e=SSL_get_error(ssl.get(),n); if(e==SSL_ERROR_SYSCALL && n==0) uncleanTlsEof=true; else if(e==SSL_ERROR_SSL && ERR_GET_REASON(ERR_peek_last_error())==SSL_R_UNEXPECTED_EOF_WHILE_READING) { uncleanTlsEof=true; ERR_clear_error(); } else if(e!=SSL_ERROR_ZERO_RETURN) throw std::runtime_error("Falha ao ler resposta TLS"); } else if(n<0) throw std::runtime_error("Falha ao ler resposta"); break; }
