@@ -1,0 +1,32 @@
+name: Linux tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libssl-dev libgl1 libegl1 libxkbcommon0 libdbus-1-3
+          python -m pip install -r Snovi/UI/Desktop/requirements.txt
+      - name: Configure, build and test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          cmake -S Snovi -B build -DSNOVI_TEST_DESKTOP=ON -DPython3_EXECUTABLE="$(command -v python)"
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure

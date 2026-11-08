@@ -34,7 +34,7 @@ thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 try:
     url = f'http://127.0.0.1:{server.server_port}/redirect'
-    run = subprocess.run([sys.argv[1], url], input='fonte\nlink 1\nvoltar\naba nova\nabas\nsair\n', text=True, capture_output=True, timeout=20, check=True)
+    run = subprocess.run([sys.argv[1], url], input='fonte\nlink 1\nvoltar\naba nova\nabas\nsair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True)
     assert '/page' in run.stdout and 'Local test' in run.stdout and '<h1>Local test</h1>' in run.stdout
     assert 'Hello' in run.stdout and 'Início' in run.stdout, run.stdout
     assert not run.stderr, run.stderr
@@ -56,14 +56,14 @@ if shutil.which('openssl'):
         threading.Thread(target=tls_server.serve_forever, daemon=True).start()
         try:
             url = f'https://127.0.0.1:{tls_server.server_port}/'
-            run = subprocess.run([sys.argv[1], url], input='sair\n', text=True, capture_output=True, timeout=20, check=True)
+            run = subprocess.run([sys.argv[1], url], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True)
             assert 'certificado inválido' in run.stderr, run.stderr
             assert 'Local test' not in run.stdout
             # Trust the test certificate, then exercise both hostname success and mismatch.
             env = dict(os.environ, SSL_CERT_FILE=str(cert))
-            good = subprocess.run([sys.argv[1], f'https://localhost:{tls_server.server_port}/'], input='sair\n', text=True, capture_output=True, timeout=20, check=True, env=env)
+            good = subprocess.run([sys.argv[1], f'https://localhost:{tls_server.server_port}/'], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=env)
             assert 'Local test' in good.stdout and not good.stderr, (good.stdout, good.stderr)
-            mismatch = subprocess.run([sys.argv[1], url], input='sair\n', text=True, capture_output=True, timeout=20, check=True, env=env)
+            mismatch = subprocess.run([sys.argv[1], url], input='sair\n', text=True, encoding='utf-8', capture_output=True, timeout=20, check=True, env=env)
             assert 'certificado inválido' in mismatch.stderr and 'Local test' not in mismatch.stdout, mismatch.stderr
         finally:
             tls_server.shutdown()

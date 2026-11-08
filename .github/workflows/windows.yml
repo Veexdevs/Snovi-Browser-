@@ -1,0 +1,68 @@
+name: Windows desktop
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Build and test Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install native dependencies
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install openssl:x64-windows-static-md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Configure and build engine
+        shell: pwsh
+        run: |
+          cmake -S Snovi -B build -A x64 `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md -DOPENSSL_USE_STATIC_LIBS=TRUE `
+            -DSNOVI_TEST_DESKTOP=ON "-DPython3_EXECUTABLE=$((Get-Command python).Source)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install Python dependencies
+        run: python -m pip install -r Snovi/UI/Desktop/requirements.txt pyinstaller
+      - name: Test engine, TLS and desktop
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          Get-Command openssl -ErrorAction Stop
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package desktop executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --name Snovi `
+            --add-binary "build/Release/snovi_bridge.dll;." `
+            --add-data "Snovi/UI/Home/assets/snovi-logo.png;assets" Snovi/UI/Desktop/main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Smoke test packaged executable
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath (Resolve-Path dist/Snovi.exe) -ArgumentList '--self-test' -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Snovi.exe smoke test timed out' }
+          if ($p.ExitCode -ne 0) { throw "Snovi.exe smoke test failed: $($p.ExitCode)" }
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Snovi-Windows-x64-experimental
+          path: dist/Snovi.exe
+          if-no-files-found: error
+          retention-days: 14

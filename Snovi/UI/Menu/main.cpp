@@ -23,7 +23,10 @@ std::string arg(const std::string& s) {auto p=s.find(' '); return p==std::string
 size_t number(const std::string& s) {size_t used=0; auto n=std::stoull(s,&used); if(used!=s.size() || n==0) throw std::runtime_error("Número inválido"); return n;}
 }
 int main(int argc,char** argv) {
+#ifndef _WIN32
     std::signal(SIGPIPE,SIG_IGN);
+#endif
+
     Browser b; help();
     if(argc>1) try {std::cout << "Carregando...\n"; b.navigate(argv[1]);} catch(const std::exception& e) {std::cerr << "Erro: " << e.what() << "\n";}
     show(b); std::string line;
