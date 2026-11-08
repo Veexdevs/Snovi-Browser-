@@ -3,3 +3,10 @@
 /.venv/
 __pycache__/
 *.py[cod]
+/Snovi/Mobile/Android/.gradle/
+/Snovi/Mobile/Android/app/build/
+/Snovi/Mobile/Android/app/.cxx/
+/Snovi/Mobile/Android/openssl/
+/Snovi/Mobile/Android/app/src/main/assets/ca-bundle.pem
+/Snovi/Mobile/iOS/ca-bundle.pem
+/mobile-artifacts/
