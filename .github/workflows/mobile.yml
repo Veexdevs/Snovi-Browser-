@@ -27,8 +27,7 @@ jobs:
         with:
           gradle-version: '8.10.2'
       - name: Install Android build tools
-        run: |
-          sdkmanager --install 'ndk;27.2.12479018' 'cmake;3.22.1' 'platforms;android-35' 'build-tools;35.0.0'
+        run: Snovi/Mobile/scripts/prepare-android-sdk.sh
       - name: Build OpenSSL for Android
         run: |
           export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/27.2.12479018"
@@ -67,7 +66,7 @@ jobs:
 
   ios:
     name: iOS IPA (unsigned)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
